@@ -1,25 +1,129 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
-output: 
-  html_document:
-    keep_md: true
+author: "David Williams"
+date: "April 17, 2015"
+output: html_document
+keep_md: true
 ---
 
 
 ## Loading and preprocessing the data
+One of the principles of reproducable research is start processing your data from its raw form.  So I start here by unzipping the original data archive.  I avoid this step if it has already been done.
 
+### Loading
+```{r}
+if(!file.exists("activity.csv"))
+{
+    unzip("activity.zip")
+}
 
+steps <- read.csv("activity.csv")
+str(steps)
+```
+
+### Preprocessing
+I'll need to summarize this data by date and figure out what days are weekends and weekdays to answer the questions below.  So I'm going to convert the dates from strings to date class objects.  We also need to convert the interval identifiers to minutes.  I'll attach these to the date to make it easier to plot time series data later.
+```{r}
+library(lubridate)
+steps$date <- ymd(steps$date)
+str(steps)
+```
 
 ## What is mean total number of steps taken per day?
-
+We'll need to summarize the number of steps by day here.  Dplyr has a handy function for this:
+```{r}
+library(dplyr)
+steps_per_day <- steps %>% group_by(date) %>% summarize(total_steps = sum(steps,na.rm=TRUE))
+hist(steps_per_day$total_steps)
+mean_steps_per_day <- round(steps_per_day %>% summarize(mean(total_steps)))
+median_steps_per_day <- steps_per_day %>% summarize(median(total_steps))
+```
+So the mean total number of steps taken per day is: `r mean_steps_per_day`  
+The median total number of steps taken per day is: `r median_steps_per_day`
 
 
 ## What is the average daily activity pattern?
+Here we will average the number of steps across the days during each 5 minute activity period.
+```{r}
+avg_steps_per_int <- steps %>% group_by(interval) %>% summarize(avg_steps = mean(steps,na.rm=TRUE))
 
+library(stringr)
+avg_steps_per_int$interval <- str_pad(avg_steps_per_int$interval,4,pad="0") # pad the hours and min for the time interval so that they are consistent
+avg_steps_per_int$hour <- substr(avg_steps_per_int$interval,1,2)
+avg_steps_per_int$min <- substr(avg_steps_per_int$interval,3,4)
+avg_steps_per_int$hms <- ymd_hms(paste("681122",avg_steps_per_int$hour,avg_steps_per_int$min,"00")) # just picking a random date here to make the plot look nice
+ plot(avg_steps_per_int$hms, avg_steps_per_int$avg_steps,type="l")
+ 
+sorted_by_avg_steps <- avg_steps_per_int %>% arrange(desc(avg_steps))
+max_avg_step <- sorted_by_avg_steps[1,2]
+hour <- sorted_by_avg_steps[1,3]
+min <- sorted_by_avg_steps[1,4]
+```
 
+So the maximum number of average steps taken is: `r max_avg_step` at `r hour`:`r min`
 
 ## Imputing missing values
+### Amount of population with missing values
+Let's get a sense of how complete our data is by figuring out how many missing values we have:
+```{r}
+nas <- table(is.na(steps$steps))
+missing <- nas[2]
+percent_missing <- round(nas[2] / (nas[1]+nas[2]) * 100)
 
+```
+So we have `r missing` missing values which is `r percent_missing`% of the total population.
+
+### Strategy for imputing missing values
+Our strategy for imputing missing values will be to use the average number of steps taken for the interval in question to impute any given missing interval step data.  We'll do this by creating a new table that links our step data to the table we made above to get the average number of steps per interval across all the days:
+```{r}
+avg_steps_per_int$interval <- as.integer(avg_steps_per_int$interval)
+imputed_na_steps <- steps %>% left_join(avg_steps_per_int)
+
+# replace the NAs with the average for the interval
+isNA <- is.na(imputed_na_steps$steps)
+imputed_na_steps[isNA,]$steps <- as.integer(round(imputed_na_steps[isNA,]$avg_steps))
+
+# get rid of extraneous columns so that our new data set is equal to the first but with NAs filled in
+imputed_na_steps <- imputed_na_steps[1:3]
+
+# Here is the first steps dataset and the imputed NA dataset.  Notices that the first has NAs in the interval while the second has the NAs replaced with the interval average
+str(steps)
+str(imputed_na_steps)
+
+imputedNA_steps_per_day <- imputed_na_steps %>% group_by(date) %>% summarize(total_steps = sum(steps))
+hist(imputedNA_steps_per_day$total_steps)
+imputedNA_mean_steps_per_day <- round(imputedNA_steps_per_day %>% summarize(mean(total_steps)))
+imputedNA_median_steps_per_day <- round(imputedNA_steps_per_day %>% summarize(median(total_steps)))
+
+```
+So now that we have imputed values for NA we can make the following comparison to get a sense of how imputing the missing values affects our anaysis:  
+imputed NAs mean: `r imputedNA_mean_steps_per_day`  
+imputed NAs median: `r imputedNA_median_steps_per_day`  
+
+ignoring NAs mean: `r mean_steps_per_day`  
+ignoring NAs median: `r median_steps_per_day`
+
+The two strategies of ignoring NA values versus imputing them does have an affect on our analysis.  When we impute the values the mean and the median shift to larger values.  Looking at the two histograms of the total steps we can see that ignoring the NAs has the effect of showing an increased number of days with 0 - 5000 steps.  Imputing the NAs creates a *normal* distribution.
 
 
 ## Are there differences in activity patterns between weekdays and weekends?
+```{r}
+# add a factor variable with the weekend or weekday
+imputed_na_steps$type <- factor((weekdays(imputed_na_steps$date) %in% c("Saturday","Sunday"))+1L,levels=1:2,labels=c('weekday','weekend'))
+
+# get the average steps on weekends
+avg_steps_per_int_we <- imputed_na_steps %>% filter(type=="weekend") %>% group_by(interval) %>% summarize(avg_steps = mean(steps,na.rm=TRUE))
+avg_steps_per_int_we$type <- factor("weekend")
+
+# get the average steps for the intervals on weekdays
+avg_steps_per_int_wd <- imputed_na_steps %>% filter(type=="weekday") %>% group_by(interval) %>% summarize(avg_steps = mean(steps,na.rm=TRUE))
+avg_steps_per_int_wd$type <- factor("weekday")
+
+# join the avg_step tables
+wsteps <- merge(avg_steps_per_int_we,avg_steps_per_int_wd, all=TRUE)
+
+library(lattice)
+xyplot(avg_steps ~ interval | type, data=wsteps, type="l")
+```
+
+So we can see from the plot that the subject walks further on morning weekdays.
